@@ -25,16 +25,17 @@
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 
 // Update these with values suitable for your network.
 
-const char* ssid = "WiFi";
-const char* password = "";
+const char* ssid = "WiFi-DOM.ru-2463";
+const char* password = "89502657277";
 
 const char* mqtt_server = "m23.cloudmqtt.com";
 const int mqtt_port = 17455; 
-const char *mqtt_user = "";
-const char *mqtt_pass = "";
+const char *mqtt_user = "orclnzbz";
+const char *mqtt_pass = "iGYujXAXAtqp";
 
 const char *topicPrefix = "main_";
 enum topicNames {LED, CLIMAT, CONTROL, SYSTEM}; 
@@ -45,8 +46,10 @@ typedef struct {
 } Topic;
 
 typedef struct {
+  int id;
   int pin;
   int value;
+  String sensorName;
   Topic topic;
 } Sensor;
 
@@ -58,8 +61,10 @@ Topic topics[] = {
 };
 
 Sensor sensors[] = {
-  {A0, 0, topics[CLIMAT]},
-  {D4, 0, topics[LED]}
+  {0, A0, 0, "temperature", topics[CLIMAT]},
+  {1, D1, 0, "led1", topics[LED]},
+  {2, D2, 0, "led2", topics[LED]},
+  {3, D4, 0, "led3", topics[LED]}
 };
 
 WiFiClient espClient;
@@ -78,7 +83,9 @@ void setup() {
 
 void ConfigureGpio() {
   pinMode(A0, INPUT);
-  pinMode(D4, OUTPUT);
+  for(int i=1; i < sizeof(sensors)/sizeof(Sensor); i++){
+    pinMode(sensors[i].pin, OUTPUT);
+  }
 }
 
 void ConfigureWifi() {
@@ -112,14 +119,16 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
   Serial.print("] ");
   String message = "";
+  char JSONMessage[length];
   for (int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
     message += (char)payload[i];
+    JSONMessage[i] = (char)payload[i];
   }
   Serial.println();
   if (strcmp(topic, topics[LED].topicName)==0){
       Serial.println("LED mesags!");
-      sensors[1].value = message.toInt();
+      parseJsonMessage(JSONMessage);
   } else if (strcmp(topic,  topics[CLIMAT].topicName)==0){
       Serial.println("CLIMAT mesags!");
   } else if (strcmp(topic,  topics[CONTROL].topicName)==0){
@@ -168,9 +177,55 @@ void publish() {
   int length = sizeof(sensors)/sizeof(Sensor);
   for(int i=0; i < length; i++) {
     if(!sensors[i].topic.isIncomingTopic){
-      snprintf (msg, 75, "sensor #%ld", sensors[i].value);
-      client.publish(sensors[i].topic.topicName, msg);
+      client.publish(
+        sensors[i].topic.topicName, 
+        prepareValuesForSending(sensors[i].id, sensors[i].sensorName, sensors[i].value)
+      );
     }
+  }
+}
+
+char *prepareValuesForSending(int id, String sensorName, int value){
+  StaticJsonBuffer<200> JsonOutgoingBuffer;
+  JsonObject& JSONencoder = JsonOutgoingBuffer.createObject();
+  JSONencoder["device"] = "ESP8266";
+  JSONencoder["id"] = id;
+  JSONencoder["sensorName"] = sensorName;
+  JsonArray& values = JSONencoder.createNestedArray("values");
+ 
+  values.add(value);
+
+  char JSONmessageBuffer[200];
+  JSONencoder.printTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
+  Serial.println("------");
+  Serial.println(JSONmessageBuffer);
+  Serial.println("------");
+
+  return JSONmessageBuffer;
+}
+
+void parseJsonMessage(char *jsonMessage){
+  Serial.println(jsonMessage);
+  StaticJsonBuffer<200> JsonIncomingBuffer;
+  JsonObject& parsed = JsonIncomingBuffer.parseObject(jsonMessage);
+ 
+  if (!parsed.success()) {   //Check for errors in parsing
+ 
+    Serial.println("Parsing failed");
+    delay(2000);
+    return;
+  }
+
+  int id = parsed["Id"];
+  if(id > 0 && id < sizeof(sensors)/sizeof(Sensor) - 1){
+    String sensorType = parsed["sensorName"];
+    if(sensorType == sensors[id].sensorName){
+      sensors[id].value = parsed["Value"];
+    }else{
+      Serial.println("Incorrect state of sensor");
+    }
+  }else{
+    Serial.println("The current sensor was not presente in hardware");
   }
 }
 
